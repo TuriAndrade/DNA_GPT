@@ -9,6 +9,7 @@ if __name__ == "__main__":
         model_config=GPTConfig.gpt_medium(
             vocab_size=6,
             block_size=512,
+            attn_window=16,
         ),
         optim_config=GPTOptimConfig(),
         load_seq_data_config=LoadSeqDataConfig(
@@ -29,7 +30,7 @@ if __name__ == "__main__":
         ),
         epochs=100,
         batch_size=8,
-        save_path="./ARTIFACTS/DNA_GPT_23/",
+        save_path="./ARTIFACTS/DNA_GPT_4/",
         master_addr="localhost",
         master_port="1234",
         backend="nccl",

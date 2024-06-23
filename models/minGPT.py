@@ -60,8 +60,16 @@ class CausalSelfAttention(nn.Module):
                 1, 1, config.block_size, config.block_size
             ),
         )
+
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        self.attn_window = config.attn_window
+
+        if self.attn_window is not None:
+            self.register_buffer(
+                "bias",
+                torch.triu(self.bias, diagonal=-self.attn_window),
+            )
 
     def forward(self, x):
         B, T, C = (
