@@ -103,20 +103,16 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = nn.ModuleDict(
-            dict(
-                c_fc=nn.Linear(config.n_embd, 4 * config.n_embd),
-                c_proj=nn.Linear(4 * config.n_embd, config.n_embd),
-                act=NewGELU(),
-                dropout=nn.Dropout(config.resid_pdrop),
-            )
+        self.mlp = nn.Sequential(
+            nn.Linear(config.n_embd, 4 * config.n_embd),
+            NewGELU(),
+            nn.Linear(4 * config.n_embd, config.n_embd),
+            nn.Dropout(config.resid_pdrop),
         )
-        m = self.mlp
-        self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x))))  # MLP forward
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlpf(self.ln_2(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 
@@ -161,7 +157,8 @@ class GPT(nn.Module):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
 
-    def configure_optimizers(self, optim_config):
+    @staticmethod
+    def configure_optimizers(model, optim_config):
         """
         This long function is unfortunately doing something very simple and is being very defensive:
         We are separating out all parameters of the model into two buckets: those that will experience
@@ -174,7 +171,7 @@ class GPT(nn.Module):
         no_decay = set()
         whitelist_weight_modules = (torch.nn.Linear,)
         blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
-        for mn, m in self.named_modules():
+        for mn, m in model.named_modules():
             for pn, p in m.named_parameters():
                 fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
                 # random note: because named_modules and named_parameters are recursive
@@ -191,7 +188,7 @@ class GPT(nn.Module):
                     no_decay.add(fpn)
 
         # validate that we considered every parameter
-        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in model.named_parameters()}
         inter_params = decay & no_decay
         union_params = decay | no_decay
         assert (

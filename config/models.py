@@ -12,6 +12,42 @@ class GPTConfig:
     attn_pdrop: float
     resid_pdrop: float
 
+    def gpt_large(vocab_size, block_size):
+        return GPTConfig(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            n_layer=36,
+            n_head=20,
+            n_embd=1280,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+            resid_pdrop=0.1,
+        )
+
+    def gpt_medium(vocab_size, block_size):
+        return GPTConfig(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            n_layer=24,
+            n_head=16,
+            n_embd=1024,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+            resid_pdrop=0.1,
+        )
+
+    def gpt_small(vocab_size, block_size):
+        return GPTConfig(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            n_layer=12,
+            n_head=12,
+            n_embd=768,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+            resid_pdrop=0.1,
+        )
+
     def gpt_mini(vocab_size, block_size):
         return GPTConfig(
             vocab_size=vocab_size,

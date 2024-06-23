@@ -1,6 +1,8 @@
 from models.minGPT import GPT
 from dataloaders.load_seq_data import LoadSeqData
 from torch.distributed import init_process_group, destroy_process_group
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import pandas as pd
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
@@ -10,7 +12,6 @@ from tqdm import tqdm
 import torch
 import numpy as np
 import os
-import multiprocessing
 
 
 class DNAGPTTrainer:
@@ -31,16 +32,11 @@ class DNAGPTTrainer:
         self.process_timeout = config.process_timeout
 
         self.init_model = None
-        self.best_model = None
+        self.best_model = self.initialize_model()
 
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = torch.inf
-
-        self.train_epoch_losses = []
-        self.val_epoch_losses = []
-
-        self.mp_lock = multiprocessing.Lock()
 
         if self.save_path is not None:
             if not os.path.exists(self.save_path):
@@ -58,21 +54,24 @@ class DNAGPTTrainer:
             if not os.path.exists(self.save_path_config):
                 os.makedirs(self.save_path_config)
 
+            self.save_path_results = os.path.join(self.save_path, "results")
+            if not os.path.exists(self.save_path_results):
+                os.makedirs(self.save_path_results)
+
         self.save_config(config.__dict__)
 
     def save_config(
         self,
         config_dict,
     ):
-        self.mp_lock.acquire()
 
         try:
             with open(os.path.join(self.save_path_config, "config.txt"), "w+") as f:
                 for key, item in config_dict.items():
                     f.write(f"{key}: {item}\n")
 
-        finally:
-            self.mp_lock.release()
+        except Exception as e:
+            print(str(e))
 
     def ddp_setup(self, rank, world_size):
         init_process_group(
@@ -92,7 +91,7 @@ class DNAGPTTrainer:
         return self.init_model
 
     def lauch_ddp_model(self, device):
-        model = GPT(self.model_config)
+        model = GPT(self.model_config).to(device)
         model.load_state_dict(self.init_model.state_dict())
 
         return DDP(model, device_ids=[device])
@@ -106,27 +105,15 @@ class DNAGPTTrainer:
         self.val_epoch_losses = []
 
     def update_global_losses(self):
-        self.mp_lock.acquire()
-
-        try:
-            self.train_losses.append(np.mean(self.train_epoch_losses))
-            self.val_losses.append(np.mean(self.val_epoch_losses))
-
-        finally:
-            self.mp_lock.release()
+        self.train_losses.append(np.mean(self.train_epoch_losses))
+        self.val_losses.append(np.mean(self.val_epoch_losses))
 
     def update_epoch_losses(self, loss, type):
-        self.mp_lock.acquire()
+        if type == "train":
+            self.train_epoch_losses.append(loss)
 
-        try:
-            if type == "train":
-                self.train_epoch_losses.append(loss)
-
-            else:
-                self.val_epoch_losses.append(loss)
-
-        finally:
-            self.mp_lock.release()
+        else:
+            self.val_epoch_losses.append(loss)
 
     def copy_models(self, models_from, models_to):
         for i in range(len(models_to)):
@@ -140,9 +127,6 @@ class DNAGPTTrainer:
     def multi_gpu_train(self, device, n_workers, loader):
         model = self.lauch_ddp_model(device)
 
-        if device == self.main_device:
-            self.best_model = self.lauch_ddp_model(device)
-
         train_loader, val_loader = loader.get_train_loader(
             world_size=n_workers,
             rank=device,
@@ -151,7 +135,7 @@ class DNAGPTTrainer:
             rank=device,
         )
 
-        optimizer = model.configure_optimizers(self.optim_config)
+        optimizer = GPT.configure_optimizers(model, self.optim_config)
 
         if device == self.main_device:
             print("\n----- STARTING TRAINING -----\n")
@@ -159,7 +143,8 @@ class DNAGPTTrainer:
         current_train_loss, current_val_loss = torch.inf, torch.inf
 
         for epoch in range(self.epochs):
-            self.initialize_epoch_losses()
+            if device == self.main_device:
+                self.initialize_epoch_losses()
 
             with tqdm(
                 total=(len(train_loader) + len(val_loader)),
@@ -183,7 +168,14 @@ class DNAGPTTrainer:
                     logits, loss = model(train_data, target)
 
                     current_train_loss = loss.item()
-                    self.update_epoch_losses(current_train_loss, type="train")
+                    if device == self.main_device:
+                        bar.set_postfix(
+                            {
+                                "train_loss": current_train_loss,
+                                "val_loss": current_val_loss,
+                            }
+                        )
+                        self.update_epoch_losses(current_train_loss, type="train")
 
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
@@ -207,7 +199,14 @@ class DNAGPTTrainer:
                         logits, loss = model(val_data, target)
 
                         current_val_loss = loss.item()
-                        self.update_epoch_losses(current_val_loss, type="val")
+                        if device == self.main_device:
+                            bar.set_postfix(
+                                {
+                                    "train_loss": current_train_loss,
+                                    "val_loss": current_val_loss,
+                                }
+                            )
+                            self.update_epoch_losses(current_val_loss, type="val")
 
                         bar.update(n_workers)
 
@@ -228,19 +227,18 @@ class DNAGPTTrainer:
                     self.save_ckpt(model, "best.pt")
 
                     self.copy_models(
-                        models_from=[model],
+                        models_from=[model.module],
                         models_to=[self.best_model],
                     )
 
     def single_gpu_train(self, device):
         model = self.initialize_model().to(device)
-        self.best_model = self.initialize_model().to(device)
 
         loader = LoadSeqData(self.load_seq_data_config)
 
         train_loader, val_loader = loader.get_train_loader(), loader.get_val_loader()
 
-        optimizer = model.configure_optimizers(self.optim_config)
+        optimizer = GPT.configure_optimizers(model, self.optim_config)
 
         print("\n----- STARTING TRAINING -----\n")
 
@@ -270,6 +268,12 @@ class DNAGPTTrainer:
                     logits, loss = model(train_data, target)
 
                     current_train_loss = loss.item()
+                    bar.set_postfix(
+                        {
+                            "train_loss": current_train_loss,
+                            "val_loss": current_val_loss,
+                        }
+                    )
                     self.update_epoch_losses(current_train_loss, type="train")
 
                     optimizer.zero_grad(set_to_none=True)
@@ -294,6 +298,12 @@ class DNAGPTTrainer:
                         logits, loss = model(val_data, target)
 
                         current_val_loss = loss.item()
+                        bar.set_postfix(
+                            {
+                                "train_loss": current_train_loss,
+                                "val_loss": current_val_loss,
+                            }
+                        )
                         self.update_epoch_losses(current_val_loss, type="val")
 
                         bar.update(1)
@@ -315,6 +325,57 @@ class DNAGPTTrainer:
                     models_from=[model],
                     models_to=[self.best_model],
                 )
+
+    def evaluate_validation(self, device):
+        loader = LoadSeqData(self.load_seq_data_config)
+
+        val_loader = loader.get_val_loader()
+
+        y_pred = []
+        y_true = []
+
+        with tqdm(
+            total=len(val_loader),
+            desc="EVALUATING MODEL ON VALIDATION SET",
+        ) as bar:
+            self.best_model = self.best_model.to(device)
+            self.best_model.eval()
+            with torch.no_grad():
+                for val_data, _ in val_loader:
+
+                    target = val_data.to(device)
+
+                    val_data = loader.prepend_sos_token(val_data, crop_end=True).to(
+                        device
+                    )
+
+                    logits, loss = self.best_model(val_data, target)
+
+                    probs = torch.nn.functional.softmax(logits, dim=-1)
+
+                    predictions = torch.argmax(probs, dim=-1)
+
+                    y_true.extend(target.cpu().numpy().flatten().tolist())
+                    y_pred.extend(predictions.cpu().numpy().flatten().tolist())
+
+                    bar.update(1)
+
+        metrics_dict = {
+            "Metric": ["Accuracy", "Precision", "Recall", "F1-score"],
+            "Score": [
+                accuracy_score(y_true, y_pred),
+                precision_score(y_true, y_pred, average="weighted", zero_division=0.0),
+                recall_score(y_true, y_pred, average="weighted", zero_division=0.0),
+                f1_score(y_true, y_pred, average="weighted", zero_division=0.0),
+            ],
+        }
+
+        metrics_df = pd.DataFrame(metrics_dict)
+
+        metrics_df.to_csv(
+            os.path.join(self.save_path_results, "results.csv"),
+            index=False,
+        )
 
     def train_ddp_process(self, rank, world_size):
         self.ddp_setup(rank, world_size)
