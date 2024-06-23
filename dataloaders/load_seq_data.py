@@ -112,6 +112,25 @@ class LoadSeqData:
         self.to_numpy()
         self.train_test_split()
 
+    def get_vocab_size(self, with_sos=True):
+        if with_sos:
+            return len(self.seq_vocab) + 1
+
+        else:
+            return len(self.seq_vocab)
+
+    def get_train_sequences_prior(self, with_sos=True):
+        counts = np.unique(self.train_sequences, return_counts=True)[1]
+
+        if with_sos:
+            sos_count = self.train_sequences.shape[0]
+            counts = np.insert(counts, 0, sos_count)
+
+        else:
+            counts = np.insert(counts, 0, 0)
+
+        return counts / counts.sum()
+
     def get_train_loader(self, world_size=1, rank=0):
         config = DataloaderConfig(
             data=self.train_sequences,

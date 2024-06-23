@@ -1,4 +1,6 @@
 from models.minGPT import GPT
+from models.dummyClassifier import DummyClassifier
+from config.models import DummyClassifierConfig
 from dataloaders.load_seq_data import LoadSeqData
 from torch.distributed import init_process_group, destroy_process_group
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
@@ -374,6 +376,60 @@ class DNAGPTTrainer:
 
         metrics_df.to_csv(
             os.path.join(self.save_path_results, "results.csv"),
+            index=False,
+        )
+
+    def evaluate_dummy_validation(self):
+        loader = LoadSeqData(self.load_seq_data_config)
+
+        val_loader = loader.get_val_loader()
+
+        y_pred = []
+        y_true = []
+
+        dummy_config = DummyClassifierConfig(
+            input_prior=loader.get_train_sequences_prior(with_sos=False),
+            out_dim=loader.get_vocab_size(with_sos=True),
+            block_size=self.model_config.block_size,
+        )
+
+        dummy = DummyClassifier(dummy_config)
+
+        with tqdm(
+            total=len(val_loader),
+            desc="EVALUATING DUMMY MODEL ON VALIDATION SET",
+        ) as bar:
+            for val_data, _ in val_loader:
+
+                target = val_data
+
+                val_data = loader.prepend_sos_token(val_data, crop_end=True)
+
+                logits, loss = dummy(val_data, target)
+
+                probs = torch.nn.functional.softmax(logits, dim=-1)
+
+                predictions = torch.argmax(probs, dim=-1)
+
+                y_true.extend(target.cpu().numpy().flatten().tolist())
+                y_pred.extend(predictions.cpu().numpy().flatten().tolist())
+
+                bar.update(1)
+
+        metrics_dict = {
+            "Metric": ["Accuracy", "Precision", "Recall", "F1-score"],
+            "Score": [
+                accuracy_score(y_true, y_pred),
+                precision_score(y_true, y_pred, average="weighted", zero_division=0.0),
+                recall_score(y_true, y_pred, average="weighted", zero_division=0.0),
+                f1_score(y_true, y_pred, average="weighted", zero_division=0.0),
+            ],
+        }
+
+        metrics_df = pd.DataFrame(metrics_dict)
+
+        metrics_df.to_csv(
+            os.path.join(self.save_path_results, "dummy_results.csv"),
             index=False,
         )
 

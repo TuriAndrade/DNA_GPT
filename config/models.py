@@ -2,6 +2,13 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class DummyClassifierConfig:
+    out_dim: int
+    input_prior: int
+    block_size: int
+
+
+@dataclass
 class GPTConfig:
     vocab_size: int
     block_size: int

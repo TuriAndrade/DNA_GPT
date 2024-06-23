@@ -30,7 +30,7 @@ if __name__ == "__main__":
         ),
         epochs=100,
         batch_size=8,
-        save_path="./ARTIFACTS/DNA_GPT_4/",
+        save_path="./ARTIFACTS/DNA_GPT_5/",
         master_addr="localhost",
         master_port="1234",
         backend="nccl",
@@ -40,6 +40,6 @@ if __name__ == "__main__":
 
     trainer = DNAGPTTrainer(trainer_config)
 
-    trainer.spawn_train_ddp()
+    # trainer.spawn_train_ddp()
 
-    trainer.evaluate_validation(0)
+    trainer.evaluate_dummy_validation()
